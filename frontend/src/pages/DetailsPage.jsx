@@ -1,58 +1,58 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useChecker } from '../context/CheckerContext';
 import { useNavigate } from 'react-router-dom';
 import PreviousButton from '../components/PreviousButton';
 import ContinueButton from '../components/ContinueButton';
+import axios from 'axios';
 import './detailpage.css';
 
 const DetailsPage = () => {
   const { userData, updateUserData } = useChecker();
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Redirect to conditions page if details are missing
-    if (!userData.details || !userData.selectedCondition) {
-      navigate('/conditions'); // Adjust the path as needed
+    if (!userData.selectedCondition) {
+      navigate('/conditions');
+      return;
     }
-  }, [userData.details, userData.selectedCondition, navigate]);
 
-  const handleContinue = async () => {
-    // Mock treatment data
-    const mockTreatments = {
-      medications: [
-        {
-          name: "Over-the-counter pain relievers",
-          description: "Such as acetaminophen or ibuprofen to reduce fever and pain",
-        },
-        {
-          name: "Decongestants",
-          description: "To help clear nasal passages",
-        },
-      ],
-      homeCare: [
-        "Rest to help the body fight the infection",
-        "Stay hydrated by drinking plenty of fluids",
-        "Use a humidifier or take a hot shower to ease congestion",
-      ],
-      lifestyle: [
-        "Adequate sleep to boost immune function",
-        "Balanced diet rich in fruits and vegetables",
-        "Stress management techniques",
-      ],
-      whenToSeeDoctor: [
-        "Fever above 101.3°F (38.5°C) that lasts more than 3 days",
-        "Symptoms that worsen after 7 days",
-        "Severe headache or sinus pain",
-      ],
+    const fetchDetails = async () => {
+      try {
+        const res = await axios.post('http://localhost:5000/api/ai-condition-details', {
+          condition: userData.selectedCondition.name,
+        });
+
+        // ✅ FIXED HERE
+        updateUserData({ details: res.data.details });
+
+      } catch (error) {
+        console.error('Error fetching condition details:', error);
+      } finally {
+        setLoading(false);
+      }
     };
 
-    updateUserData({ treatments: mockTreatments });
-    return true;
+    fetchDetails();
+  }, [userData.selectedCondition, updateUserData, navigate]);
+
+  const handleContinue = async () => {
+    try {
+      const res = await axios.post('http://localhost:5000/api/treatment', {
+        condition: userData.selectedCondition.name,
+      });
+
+      updateUserData({ treatments: res.data });
+      navigate('/treatment');
+    } catch (error) {
+      console.error('Error fetching treatment:', error);
+    }
   };
 
-  if (!userData.details || !userData.selectedCondition) {
-    return <div className="loading">Loading details...</div>;
-  }
+  if (loading) return <div className="loading">Loading details...</div>;
+  if (!userData.details) return <div className="loading">No details found.</div>;
+
+  const { details } = userData;
 
   return (
     <div className="details-page">
@@ -73,42 +73,46 @@ const DetailsPage = () => {
       </div>
 
       <div className="details-section">
-        <div className="detail-card">
-          <h3>Overview</h3>
-          <p>{userData.details.overview}</p>
-        </div>
+        {details.overview && (
+          <div className="detail-card">
+            <h3>Overview</h3>
+            <p>{details.overview}</p>
+          </div>
+        )}
 
-        <div className="detail-card">
-          <h3>Causes</h3>
-          <p>{userData.details.causes}</p>
-        </div>
+        {details.causes && (
+          <div className="detail-card">
+            <h3>Causes</h3>
+            <p dangerouslySetInnerHTML={{ __html: details.causes.replace(/\n/g, '<br/>') }} />
+          </div>
+        )}
 
-        <div className="detail-card">
-          <h3>Risk Factors</h3>
-          <ul>
-            {userData.details.riskFactors?.map((factor, index) => (
-              <li key={index}>{factor}</li>
-            ))}
-          </ul>
-        </div>
+        {details.riskFactors?.length > 0 && (
+          <div className="detail-card">
+            <h3>Risk Factors</h3>
+            <ul>
+              {details.riskFactors.map((factor, idx) => <li key={idx}>{factor}</li>)}
+            </ul>
+          </div>
+        )}
 
-        <div className="detail-card">
-          <h3>Possible Complications</h3>
-          <ul>
-            {userData.details.complications?.map((complication, index) => (
-              <li key={index}>{complication}</li>
-            ))}
-          </ul>
-        </div>
+        {details.complications?.length > 0 && (
+          <div className="detail-card">
+            <h3>Possible Complications</h3>
+            <ul>
+              {details.complications.map((comp, idx) => <li key={idx}>{comp}</li>)}
+            </ul>
+          </div>
+        )}
 
-        <div className="detail-card">
-          <h3>Prevention</h3>
-          <ul>
-            {userData.details.prevention?.map((prevention, index) => (
-              <li key={index}>{prevention}</li>
-            ))}
-          </ul>
-        </div>
+        {details.prevention?.length > 0 && (
+          <div className="detail-card">
+            <h3>Prevention</h3>
+            <ul>
+              {details.prevention.map((prev, idx) => <li key={idx}>{prev}</li>)}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="buttons-container">

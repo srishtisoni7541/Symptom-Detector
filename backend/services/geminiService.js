@@ -1,162 +1,147 @@
-
-const dotenv=require('dotenv');
+const dotenv = require("dotenv");
 dotenv.config();
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-console.log(process.env.GEMINI_API_KEY);
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
+// Init Gemini
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Initialize Generative AI with API key
-const API_KEY = process.env.GEMINI_API_KEY;
-const genAI = new GoogleGenerativeAI(API_KEY);
+// ===============================
+// 🔹 Helper: Delay for retry (429)
+// ===============================
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper function to structure the prompt for symptom analysis
-const createSymptomAnalysisPrompt = (age, sex, symptoms) => {
-  return `
-    You are a medical symptom analyzer. Based on the following patient information, analyze the symptoms 
-    and provide possible conditions that match these symptoms. For each condition, include a probability 
-    (High, Medium, or Low) and a brief description.
+// ===============================
+// 🔹 PROMPT HELPERS
+// ===============================
 
-    Patient Information:
-    - Age: ${age}
-    - Sex: ${sex}
-    - Symptoms: ${symptoms}
+const createSymptomAnalysisPrompt = (age, gender, symptoms) => {
+  let symptomList = [];
 
-    Please provide your analysis in JSON format with the following structure:
-    {
-      "conditions": [
-        {
-          "name": "Condition Name",
-          "probability": "High/Medium/Low",
-          "description": "Brief description of the condition"
-        }
-      ]
+  if (Array.isArray(symptoms)) {
+    // If it's an array of objects like [{symptom: "fever"}]
+    if (symptoms.length && typeof symptoms[0] === "object") {
+      symptomList = symptoms.map((s) => s.symptom?.trim()).filter(Boolean);
+    } else {
+      symptomList = symptoms.map((s) => s.trim?.() ?? s);
     }
+  } else if (typeof symptoms === "string") {
+    symptomList = symptoms.split(",").map((s) => s.trim());
+  } else if (typeof symptoms === "object" && symptoms !== null) {
+    // Convert object to string values if possible
+    symptomList = Object.values(symptoms).map((s) => s.toString().trim());
+  } else {
+    throw new TypeError(`Symptoms must be an array, object, or comma-separated string. Got: ${typeof symptoms}`);
+  }
 
-    Limit your response to the 3-5 most likely conditions.
-  `;
+  return `
+You are a medical symptom analyzer. Analyze the following patient's symptoms 
+and suggest 3 to 5 possible medical conditions.
+
+Patient:
+- Age: ${age}
+- Gender: ${gender}
+- Symptoms: ${symptomList.join(", ")}
+
+For each condition include:
+- Name
+- Probability (High/Medium/Low)
+- Brief description
+
+Return your response in JSON format:
+{
+  "conditions": [
+    {
+      "name": "Condition Name",
+      "probability": "High/Medium/Low",
+      "description": "Brief description"
+    }
+  ]
+}
+`;
 };
 
-// Helper function to structure the prompt for condition details
-const createConditionDetailsPrompt = (condition) => {
-  return `
-    You are a medical information provider. Please provide detailed information about the following medical condition:
-    
-    Condition: ${condition}
-    
-    Please provide your response in JSON format with the following structure:
-    {
-      "overview": "General overview of the condition",
-      "causes": "What causes this condition",
-      "riskFactors": ["Risk factor 1", "Risk factor 2", ...],
-      "complications": ["Possible complication 1", "Possible complication 2", ...],
-      "prevention": ["Prevention method 1", "Prevention method 2", ...]
-    }
-  `;
-};
 
-// Helper function to structure the prompt for treatment options
-const createTreatmentOptionsPrompt = (condition) => {
-  return `
-    You are a medical information provider. Please provide treatment options for the following medical condition:
-    
-    Condition: ${condition}
-    
-    Please provide your response in JSON format with the following structure:
-    {
-      "medications": [
-        {
-          "name": "Medication name",
-          "description": "Brief description of the medication"
-        }
-      ],
-      "homeCare": ["Home care method 1", "Home care method 2", ...],
-      "lifestyle": ["Lifestyle change 1", "Lifestyle change 2", ...],
-      "whenToSeeDoctor": ["Warning sign 1", "Warning sign 2", ...]
-    }
-  `;
-};
+const createConditionDetailsPrompt = (condition) => `
+You are a medical expert. Provide a detailed overview of the condition: "${condition}".
 
-// Extract JSON from the Gemini response
+Return in JSON format:
+{
+  "overview": "General overview",
+  "causes": "What causes it",
+  "riskFactors": ["Factor 1", "Factor 2"],
+  "complications": ["Complication 1", "Complication 2"],
+  "prevention": ["Prevention method 1", "Prevention method 2"]
+}
+`;
+
+const createTreatmentOptionsPrompt = (condition) => `
+You are a medical expert. Provide treatment options for: "${condition}".
+
+Return in JSON format:
+{
+  "medications": [
+    {
+      "name": "Medicine Name",
+      "description": "Short description"
+    }
+  ],
+  "homeCare": ["Method 1", "Method 2"],
+  "lifestyle": ["Tip 1", "Tip 2"],
+  "whenToSeeDoctor": ["Warning 1", "Warning 2"]
+}
+`;
+
+// ===============================
+// 🔹 Extract JSON from Gemini
+// ===============================
+
 const extractJsonFromResponse = (responseText) => {
   try {
-    // Find the JSON part of the response (might be wrapped in markdown code blocks)
-    const jsonMatch = responseText.match(/```json\s*([\s\S]*?)\s*```|(\{[\s\S]*\})/);
-    
-    if (jsonMatch) {
-      const jsonString = jsonMatch[1] || jsonMatch[2];
-      return JSON.parse(jsonString.trim());
+    const match = responseText.match(/```json\s*([\s\S]*?)```|({[\s\S]*})/);
+    const jsonString = match?.[1] || match?.[2];
+    if (!jsonString) throw new Error("No JSON found in response");
+    return JSON.parse(jsonString.trim());
+  } catch (err) {
+    console.error("Failed to parse AI response:", err.message);
+    throw new Error("Invalid response format from AI");
+  }
+};
+
+// ===============================
+// 🔹 Main AI Methods
+// ===============================
+
+const getAIResponse = async (prompt) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    return extractJsonFromResponse(text);
+  } catch (error) {
+    if (error.status === 429) {
+      console.warn("Rate limit hit. Retrying in 5 seconds...");
+      await delay(5000);
+      return getAIResponse(prompt); // Retry once
     }
-    
-    // If no code block found, try to parse the entire response
-    return JSON.parse(responseText.trim());
-  } catch (error) {
-    console.error('Error extracting JSON from response:', error);
-    throw new Error('Failed to parse AI response');
-  }
-};
-
-// Analyze symptoms using Gemini AI
-exports.analyzeSymptoms = async (age, sex, symptoms) => {
-  try {
-    // Get the generative model
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    
-    // Create the prompt
-    const prompt = createSymptomAnalysisPrompt(age, sex, symptoms);
-    
-    // Generate content
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const responseText = response.text();
-    
-    // Extract and return the JSON part
-    return extractJsonFromResponse(responseText);
-  } catch (error) {
-    console.error('Error in Gemini service (analyzeSymptoms):', error);
+    console.error("Gemini API Error:", error.message || error);
     throw error;
   }
 };
 
-// Get details about a condition using Gemini AI
+exports.analyzeSymptoms = async (age, gender, symptoms) => {
+  console.log(`[Analyze Symptoms] Age: ${age}, Gender: ${gender}, Symptoms:`, symptoms);
+  const prompt = createSymptomAnalysisPrompt(age, gender, symptoms);
+  return await getAIResponse(prompt);
+};
+
 exports.getConditionDetails = async (condition) => {
-  try {
-    // Get the generative model
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    
-    // Create the prompt
-    const prompt = createConditionDetailsPrompt(condition);
-    
-    // Generate content
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const responseText = response.text();
-    
-    // Extract and return the JSON part
-    return extractJsonFromResponse(responseText);
-  } catch (error) {
-    console.error('Error in Gemini service (getConditionDetails):', error);
-    throw error;
-  }
+  console.log(`[Condition Details] Condition: ${condition}`);
+  const prompt = createConditionDetailsPrompt(condition);
+  return await getAIResponse(prompt);
 };
 
-// Get treatment options for a condition using Gemini AI
 exports.getTreatmentOptions = async (condition) => {
-  try {
-    // Get the generative model
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    
-    // Create the prompt
-    const prompt = createTreatmentOptionsPrompt(condition);
-    
-    // Generate content
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const responseText = response.text();
-    
-    // Extract and return the JSON part
-    return extractJsonFromResponse(responseText);
-  } catch (error) {
-    console.error('Error in Gemini service (getTreatmentOptions):', error);
-    throw error;
-  }
+  console.log(`[Treatment Options] Condition: ${condition}`);
+  const prompt = createTreatmentOptionsPrompt(condition);
+  return await getAIResponse(prompt);
 };
